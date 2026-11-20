@@ -1,3 +1,5 @@
+Live demo: https://qr-cloud-l07z.onrender.com
+
 # QR Maker – cloud-based QR code generator
 
 ## Architecture
