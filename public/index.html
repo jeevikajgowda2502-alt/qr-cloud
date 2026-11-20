@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR Maker</title>
+<style>
+  :root { --ink:#14202b; --muted:#5b6b7a; --line:#d5dde5; --bg:#f2f5f8; --card:#fff; --accent:#0b7a75; --err:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8eef4; --muted:#9aabba; --line:#2c3a47; --bg:#0f1720; --card:#16212c; --accent:#3cc2b8; --err:#ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 "Segoe UI", system-ui, sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:2rem; margin:0 0 4px; letter-spacing:-.02em; }
+  p.sub { margin:0 0 28px; color:var(--muted); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  @media (max-width:760px) { .grid { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  label { display:block; font-weight:600; margin:0 0 6px; }
+  textarea, input[type=text] { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; font:inherit; }
+  textarea { min-height:96px; resize:vertical; }
+  .row { display:flex; gap:16px; align-items:center; margin:16px 0; flex-wrap:wrap; }
+  .row label { margin:0; font-weight:500; }
+  input[type=color] { width:42px; height:32px; border:1px solid var(--line); border-radius:6px; padding:2px; background:transparent; }
+  button { font:inherit; font-weight:600; padding:10px 16px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  #msg { min-height:1.4em; margin-top:10px; color:var(--err); }
+  .preview { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:320px; gap:14px; text-align:center; color:var(--muted); }
+  .preview img { width:240px; height:240px; border:10px solid #fff; border-radius:4px; box-shadow:0 0 0 2px var(--ink); image-rendering:pixelated; }
+  .actions { display:flex; gap:10px; }
+  .actions a { text-decoration:none; font-weight:600; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; color:var(--accent); }
+  h2 { font-size:1.2rem; margin:32px 0 12px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; gap:12px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+  li img { width:56px; height:56px; border-radius:4px; background:#fff; }
+  li .txt { flex:1; min-width:0; }
+  li .txt b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  li .txt small { color:var(--muted); }
+  .empty { color:var(--muted); padding:12px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>QR Maker</h1>
+  <p class="sub">Turn a link or text into a QR code. Your codes are saved in the cloud database.</p>
+
+  <div class="grid">
+    <section class="card">
+      <label for="content">Link or text</label>
+      <textarea id="content" placeholder="https://example.com"></textarea>
+      <div class="row">
+        <label for="dark">Code color</label><input type="color" id="dark" value="#14202b">
+        <label for="light">Background</label><input type="color" id="light" value="#ffffff">
+      </div>
+      <div class="row">
+        <input type="checkbox" id="tracked"><label for="tracked">Count scans (links only)</label>
+      </div>
+      <button id="go">Create QR code</button>
+      <div id="msg" role="alert"></div>
+    </section>
+
+    <section class="card preview" id="preview" aria-live="polite">
+      <span>Your QR code will appear here.</span>
+    </section>
+  </div>
+
+  <h2>Your saved codes</h2>
+  <ul id="history"></ul>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let session = localStorage.getItem('qr-session');
+  if (!session) { session = crypto.randomUUID(); localStorage.setItem('qr-session', session); }
+
+  async function loadHistory() {
+    const rows = await (await fetch('/api/qr?session=' + encodeURIComponent(session))).json();
+    const ul = $('history'); ul.innerHTML = '';
+    if (!rows.length) { ul.innerHTML = '<li class="empty">No codes yet. Create your first one above.</li>'; return; }
+    for (const r of rows) {
+      const li = document.createElement('li');
+      const img = document.createElement('img'); img.src = `/api/qr/${r.id}/image.png`; img.alt = 'QR code';
+      const txt = document.createElement('div'); txt.className = 'txt';
+      const b = document.createElement('b'); b.textContent = r.content;
+      const s = document.createElement('small');
+      s.textContent = (r.tracked ? `${r.scans} scan${r.scans === 1 ? '' : 's'} · ` : '') + new Date(r.created_at + 'Z').toLocaleString();
+      txt.append(b, s);
+      const dl = document.createElement('a'); dl.href = `/api/qr/${r.id}/image.png?download=1`; dl.textContent = 'Download';
+      const del = document.createElement('button'); del.className = 'ghost'; del.textContent = 'Delete';
+      del.onclick = async () => { await fetch(`/api/qr/${r.id}?session=${encodeURIComponent(session)}`, { method: 'DELETE' }); loadHistory(); };
+      li.append(img, txt, dl, del); ul.append(li);
+    }
+  }
+
+  $('go').onclick = async () => {
+    $('msg').textContent = '';
+    const res = await fetch('/api/qr', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: $('content').value, session, tracked: $('tracked').checked, dark: $('dark').value, light: $('light').value })
+    });
+    const data = await res.json();
+    if (!res.ok) { $('msg').textContent = data.error; return; }
+    $('preview').innerHTML = `<img src="${data.image}" alt="Generated QR code">
+      <div class="actions"><a href="/api/qr/${data.id}/image.png?download=1">Download PNG</a><a href="/api/qr/${data.id}/image.svg?download=1">Download SVG</a></div>`;
+    loadHistory();
+  };
+  loadHistory();
+</script>
+</body>
+</html>
