@@ -1,36 +1,59 @@
 const express = require('express');
 const QRCode = require('qrcode');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const path = require('path');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'qr.db');
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// ---------- Database ----------
-const db = new Database(DB_PATH);
-db.exec(`
-  CREATE TABLE IF NOT EXISTS qr_codes (
-    id         TEXT PRIMARY KEY,
-    session    TEXT NOT NULL,
-    content    TEXT NOT NULL,
-    tracked    INTEGER NOT NULL DEFAULT 0,
-    dark       TEXT NOT NULL,
-    light      TEXT NOT NULL,
-    scans      INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE INDEX IF NOT EXISTS idx_qr_session ON qr_codes(session);
-`);
+// ---------- Database (PostgreSQL) ----------
+const isLocal = !DATABASE_URL || /localhost|127\.0\.0\.1/.test(DATABASE_URL);
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+});
 
-// ---------- App ----------
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id            SERIAL PRIMARY KEY,
+      email         TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS qr_codes (
+      id         TEXT PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content    TEXT NOT NULL,
+      tracked    BOOLEAN NOT NULL DEFAULT false,
+      dark       TEXT NOT NULL,
+      light      TEXT NOT NULL,
+      scans      INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_qr_user ON qr_codes(user_id);
+  `);
+}
+
+// ---------- Helpers ----------
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '10kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+const wrap = (fn) => (req, res) =>
+  fn(req, res).catch((e) => {
+    console.error(e);
+    res.status(500).json({ error: 'Server error. Please try again.' });
+  });
+
 const isHex = (s) => /^#[0-9a-fA-F]{6}$/.test(s);
 const isUrl = (s) => /^https?:\/\/\S+$/i.test(s);
+const isEmail = (s) => typeof s === 'string' && s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 const baseUrl = (req) => process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
 const target = (row, req) => (row.tracked ? `${baseUrl(req)}/r/${row.id}` : row.content);
 const opts = (row, extra = {}) => ({
@@ -40,57 +63,90 @@ const opts = (row, extra = {}) => ({
   ...extra,
 });
 
-// Health check (used by load balancers / cloud platforms)
+// Simple in-memory rate limiter (per IP + path)
+const hits = new Map();
+const limit = (max, windowMs) => (req, res, next) => {
+  const key = req.ip + req.path;
+  const now = Date.now();
+  const recent = (hits.get(key) || []).filter((t) => now - t < windowMs);
+  if (recent.length >= max) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+  recent.push(now);
+  hits.set(key, recent);
+  next();
+};
+
+const sign = (user) => jwt.sign({ uid: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+
+function auth(req, res, next) {
+  const header = req.get('Authorization') || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.userId = payload.uid;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Please log in.' });
+  }
+}
+
+// ---------- Routes ----------
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Create a QR code
-app.post('/api/qr', async (req, res) => {
+app.post('/api/auth/register', limit(10, 15 * 60 * 1000), wrap(async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!isEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (typeof password !== 'string' || password.length < 8 || password.length > 72)
+    return res.status(400).json({ error: 'Password must be 8 to 72 characters.' });
   try {
-    const { content, session, tracked = false, dark = '#14202b', light = '#ffffff' } = req.body || {};
-    if (typeof content !== 'string' || !content.trim() || content.length > 1000)
-      return res.status(400).json({ error: 'Enter text or a URL (max 1000 characters).' });
-    if (typeof session !== 'string' || session.length < 8 || session.length > 64)
-      return res.status(400).json({ error: 'Missing session id.' });
-    if (!isHex(dark) || !isHex(light))
-      return res.status(400).json({ error: 'Colors must be hex values like #14202b.' });
-    if (tracked && !isUrl(content.trim()))
-      return res.status(400).json({ error: 'Scan tracking only works with http(s) URLs.' });
-
-    const row = {
-      id: crypto.randomBytes(5).toString('hex'),
-      session,
-      content: content.trim(),
-      tracked: tracked ? 1 : 0,
-      dark,
-      light,
-    };
-    db.prepare(
-      'INSERT INTO qr_codes (id, session, content, tracked, dark, light) VALUES (@id,@session,@content,@tracked,@dark,@light)'
-    ).run(row);
-
-    const image = await QRCode.toDataURL(target(row, req), opts(row, { width: 512 }));
-    res.status(201).json({ id: row.id, image });
+    const hash = await bcrypt.hash(password, 10);
+    const { rows } = await pool.query(
+      'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email',
+      [email.toLowerCase(), hash]
+    );
+    res.status(201).json({ token: sign(rows[0]), email: rows[0].email });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Could not create the QR code.' });
+    if (e.code === '23505') return res.status(409).json({ error: 'That email is already registered. Log in instead.' });
+    throw e;
   }
-});
+}));
 
-// List history for one browser session
-app.get('/api/qr', (req, res) => {
-  const session = String(req.query.session || '');
-  const rows = db
-    .prepare('SELECT id, content, tracked, scans, created_at FROM qr_codes WHERE session = ? ORDER BY created_at DESC, rowid DESC LIMIT 50')
-    .all(session);
+app.post('/api/auth/login', limit(10, 15 * 60 * 1000), wrap(async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!isEmail(email) || typeof password !== 'string')
+    return res.status(400).json({ error: 'Enter your email and password.' });
+  const { rows } = await pool.query('SELECT id, email, password_hash FROM users WHERE email = $1', [email.toLowerCase()]);
+  const ok = rows[0] && (await bcrypt.compare(password, rows[0].password_hash));
+  if (!ok) return res.status(401).json({ error: 'Wrong email or password.' });
+  res.json({ token: sign(rows[0]), email: rows[0].email });
+}));
+
+app.post('/api/qr', auth, wrap(async (req, res) => {
+  const { content, tracked = false, dark = '#14202b', light = '#ffffff' } = req.body || {};
+  if (typeof content !== 'string' || !content.trim() || content.length > 1000)
+    return res.status(400).json({ error: 'Enter text or a URL (max 1000 characters).' });
+  if (!isHex(dark) || !isHex(light)) return res.status(400).json({ error: 'Colors must be hex values like #14202b.' });
+  if (tracked && !isUrl(content.trim())) return res.status(400).json({ error: 'Scan tracking only works with http(s) URLs.' });
+
+  const row = { id: crypto.randomBytes(5).toString('hex'), content: content.trim(), tracked: !!tracked, dark, light };
+  await pool.query(
+    'INSERT INTO qr_codes (id, user_id, content, tracked, dark, light) VALUES ($1,$2,$3,$4,$5,$6)',
+    [row.id, req.userId, row.content, row.tracked, row.dark, row.light]
+  );
+  res.status(201).json({ id: row.id, image: await QRCode.toDataURL(target(row, req), opts(row, { width: 512 })) });
+}));
+
+app.get('/api/qr', auth, wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT id, content, tracked, scans, created_at FROM qr_codes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
+    [req.userId]
+  );
   res.json(rows);
-});
+}));
 
-// Download image: /api/qr/:id/image.png or image.svg
-app.get('/api/qr/:id/image.:ext', async (req, res) => {
-  const row = db.prepare('SELECT * FROM qr_codes WHERE id = ?').get(req.params.id);
+app.get('/api/qr/:id/image.:ext', auth, wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM qr_codes WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+  const row = rows[0];
   if (!row) return res.status(404).json({ error: 'Not found.' });
-  const download = req.query.download ? `attachment; filename="qr-${row.id}.${req.params.ext}"` : 'inline';
-  res.set('Content-Disposition', download);
   if (req.params.ext === 'svg') {
     res.type('image/svg+xml').send(await QRCode.toString(target(row, req), opts(row, { type: 'svg' })));
   } else if (req.params.ext === 'png') {
@@ -98,21 +154,32 @@ app.get('/api/qr/:id/image.:ext', async (req, res) => {
   } else {
     res.status(400).json({ error: 'Use .png or .svg' });
   }
-});
+}));
 
-// Delete
-app.delete('/api/qr/:id', (req, res) => {
-  const session = String(req.query.session || '');
-  const info = db.prepare('DELETE FROM qr_codes WHERE id = ? AND session = ?').run(req.params.id, session);
-  res.status(info.changes ? 200 : 404).json({ deleted: info.changes });
-});
+app.delete('/api/qr/:id', auth, wrap(async (req, res) => {
+  const r = await pool.query('DELETE FROM qr_codes WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+  res.status(r.rowCount ? 200 : 404).json({ deleted: r.rowCount });
+}));
 
-// Scan tracking: QR points here, we count the scan and redirect
-app.get('/r/:id', (req, res) => {
-  const row = db.prepare('SELECT content FROM qr_codes WHERE id = ? AND tracked = 1').get(req.params.id);
-  if (!row) return res.status(404).send('This QR code does not exist.');
-  db.prepare('UPDATE qr_codes SET scans = scans + 1 WHERE id = ?').run(req.params.id);
-  res.redirect(302, row.content);
-});
+// Scan tracking: public link that counts the scan then redirects
+app.get('/r/:id', wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    'UPDATE qr_codes SET scans = scans + 1 WHERE id = $1 AND tracked = true RETURNING content',
+    [req.params.id]
+  );
+  if (!rows[0]) return res.status(404).send('This QR code does not exist.');
+  res.redirect(302, rows[0].content);
+}));
 
-app.listen(PORT, () => console.log(`QR service listening on :${PORT}`));
+// ---------- Start ----------
+async function start() {
+  if (!DATABASE_URL) { console.error('DATABASE_URL is not set.'); process.exit(1); }
+  if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+    console.error('JWT_SECRET is not set.'); process.exit(1);
+  }
+  await initDb();
+  app.listen(PORT, () => console.log(`QR service listening on :${PORT}`));
+}
+
+module.exports = app;
+if (require.main === module) start().catch((e) => { console.error(e); process.exit(1); });

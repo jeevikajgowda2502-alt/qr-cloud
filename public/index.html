@@ -12,25 +12,26 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 "Segoe UI", system-ui, sans-serif; }
   main { max-width:960px; margin:0 auto; padding:32px 20px 64px; }
+  header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
   h1 { font-size:2rem; margin:0 0 4px; letter-spacing:-.02em; }
   p.sub { margin:0 0 28px; color:var(--muted); }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
   @media (max-width:760px) { .grid { grid-template-columns:1fr; } }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .auth { max-width:420px; }
   label { display:block; font-weight:600; margin:0 0 6px; }
-  textarea, input[type=text] { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; font:inherit; }
+  textarea, input[type=text], input[type=email], input[type=password] { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; font:inherit; margin-bottom:12px; }
   textarea { min-height:96px; resize:vertical; }
   .row { display:flex; gap:16px; align-items:center; margin:16px 0; flex-wrap:wrap; }
   .row label { margin:0; font-weight:500; }
   input[type=color] { width:42px; height:32px; border:1px solid var(--line); border-radius:6px; padding:2px; background:transparent; }
   button { font:inherit; font-weight:600; padding:10px 16px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
   button.ghost { background:transparent; color:var(--accent); }
-  button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
-  #msg { min-height:1.4em; margin-top:10px; color:var(--err); }
+  button:focus-visible, textarea:focus-visible, input:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .msg { min-height:1.4em; margin-top:10px; color:var(--err); }
+  .btns { display:flex; gap:10px; flex-wrap:wrap; }
   .preview { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:320px; gap:14px; text-align:center; color:var(--muted); }
   .preview img { width:240px; height:240px; border:10px solid #fff; border-radius:4px; box-shadow:0 0 0 2px var(--ink); image-rendering:pixelated; }
-  .actions { display:flex; gap:10px; }
-  .actions a { text-decoration:none; font-weight:600; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; color:var(--accent); }
   h2 { font-size:1.2rem; margin:32px 0 12px; }
   ul { list-style:none; margin:0; padding:0; }
   li { display:flex; gap:12px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
@@ -39,74 +40,139 @@
   li .txt b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   li .txt small { color:var(--muted); }
   .empty { color:var(--muted); padding:12px 0; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>QR Maker</h1>
-  <p class="sub">Turn a link or text into a QR code. Your codes are saved in the cloud database.</p>
+  <header>
+    <div>
+      <h1>QR Maker</h1>
+      <p class="sub">Turn a link or text into a QR code. Your codes are saved to your account.</p>
+    </div>
+    <div id="who" hidden><span id="email"></span> <button class="ghost" id="logout">Log out</button></div>
+  </header>
 
-  <div class="grid">
-    <section class="card">
-      <label for="content">Link or text</label>
-      <textarea id="content" placeholder="https://example.com"></textarea>
-      <div class="row">
-        <label for="dark">Code color</label><input type="color" id="dark" value="#14202b">
-        <label for="light">Background</label><input type="color" id="light" value="#ffffff">
-      </div>
-      <div class="row">
-        <input type="checkbox" id="tracked"><label for="tracked">Count scans (links only)</label>
-      </div>
-      <button id="go">Create QR code</button>
-      <div id="msg" role="alert"></div>
-    </section>
+  <section id="authView" class="card auth" hidden>
+    <label for="aemail">Email</label>
+    <input type="email" id="aemail" autocomplete="email">
+    <label for="apass">Password (8 or more characters)</label>
+    <input type="password" id="apass" autocomplete="current-password">
+    <div class="btns"><button id="login">Log in</button><button class="ghost" id="register">Create account</button></div>
+    <div class="msg" id="amsg" role="alert"></div>
+  </section>
 
-    <section class="card preview" id="preview" aria-live="polite">
-      <span>Your QR code will appear here.</span>
-    </section>
+  <div id="appView" hidden>
+    <div class="grid">
+      <section class="card">
+        <label for="content">Link or text</label>
+        <textarea id="content" placeholder="https://example.com"></textarea>
+        <div class="row">
+          <label for="dark">Code color</label><input type="color" id="dark" value="#14202b">
+          <label for="light">Background</label><input type="color" id="light" value="#ffffff">
+        </div>
+        <div class="row"><input type="checkbox" id="tracked"><label for="tracked">Count scans (links only)</label></div>
+        <button id="go">Create QR code</button>
+        <div class="msg" id="msg" role="alert"></div>
+      </section>
+      <section class="card preview" id="preview" aria-live="polite"><span>Your QR code will appear here.</span></section>
+    </div>
+    <h2>Your saved codes</h2>
+    <ul id="history"></ul>
   </div>
-
-  <h2>Your saved codes</h2>
-  <ul id="history"></ul>
 </main>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  let session = localStorage.getItem('qr-session');
-  if (!session) { session = crypto.randomUUID(); localStorage.setItem('qr-session', session); }
+  let token = localStorage.getItem('qr-token');
+  let userEmail = localStorage.getItem('qr-email');
+
+  async function api(url, opts = {}) {
+    const res = await fetch(url, {
+      ...opts,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    });
+    if (res.status === 401 && token) logout();
+    return res;
+  }
+
+  function show() {
+    const loggedIn = !!token;
+    $('authView').hidden = loggedIn; $('appView').hidden = !loggedIn; $('who').hidden = !loggedIn;
+    $('email').textContent = userEmail || '';
+    if (loggedIn) loadHistory();
+  }
+
+  function logout() {
+    token = null; userEmail = null;
+    localStorage.removeItem('qr-token'); localStorage.removeItem('qr-email');
+    show();
+  }
+
+  async function authenticate(kind) {
+    $('amsg').textContent = '';
+    const res = await fetch('/api/auth/' + kind, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: $('aemail').value, password: $('apass').value }),
+    });
+    const data = await res.json();
+    if (!res.ok) { $('amsg').textContent = data.error; return; }
+    token = data.token; userEmail = data.email;
+    localStorage.setItem('qr-token', token); localStorage.setItem('qr-email', userEmail);
+    $('apass').value = '';
+    show();
+  }
+
+  async function fileUrl(id, ext) {
+    const res = await api(`/api/qr/${id}/image.${ext}`);
+    return URL.createObjectURL(await res.blob());
+  }
+  async function download(id, ext) {
+    const a = document.createElement('a');
+    a.href = await fileUrl(id, ext); a.download = `qr-${id}.${ext}`; a.click();
+  }
 
   async function loadHistory() {
-    const rows = await (await fetch('/api/qr?session=' + encodeURIComponent(session))).json();
+    const res = await api('/api/qr');
+    if (!res.ok) return;
+    const rows = await res.json();
     const ul = $('history'); ul.innerHTML = '';
     if (!rows.length) { ul.innerHTML = '<li class="empty">No codes yet. Create your first one above.</li>'; return; }
     for (const r of rows) {
       const li = document.createElement('li');
-      const img = document.createElement('img'); img.src = `/api/qr/${r.id}/image.png`; img.alt = 'QR code';
+      const img = document.createElement('img'); img.alt = 'QR code'; fileUrl(r.id, 'png').then((u) => (img.src = u));
       const txt = document.createElement('div'); txt.className = 'txt';
       const b = document.createElement('b'); b.textContent = r.content;
       const s = document.createElement('small');
-      s.textContent = (r.tracked ? `${r.scans} scan${r.scans === 1 ? '' : 's'} · ` : '') + new Date(r.created_at + 'Z').toLocaleString();
+      s.textContent = (r.tracked ? `${r.scans} scan${r.scans === 1 ? '' : 's'} · ` : '') + new Date(r.created_at).toLocaleString();
       txt.append(b, s);
-      const dl = document.createElement('a'); dl.href = `/api/qr/${r.id}/image.png?download=1`; dl.textContent = 'Download';
+      const dl = document.createElement('button'); dl.className = 'ghost'; dl.textContent = 'Download'; dl.onclick = () => download(r.id, 'png');
       const del = document.createElement('button'); del.className = 'ghost'; del.textContent = 'Delete';
-      del.onclick = async () => { await fetch(`/api/qr/${r.id}?session=${encodeURIComponent(session)}`, { method: 'DELETE' }); loadHistory(); };
+      del.onclick = async () => { await api('/api/qr/' + r.id, { method: 'DELETE' }); loadHistory(); };
       li.append(img, txt, dl, del); ul.append(li);
     }
   }
 
+  $('login').onclick = () => authenticate('login');
+  $('register').onclick = () => authenticate('register');
+  $('logout').onclick = logout;
+
   $('go').onclick = async () => {
     $('msg').textContent = '';
-    const res = await fetch('/api/qr', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: $('content').value, session, tracked: $('tracked').checked, dark: $('dark').value, light: $('light').value })
+    const res = await api('/api/qr', {
+      method: 'POST',
+      body: JSON.stringify({ content: $('content').value, tracked: $('tracked').checked, dark: $('dark').value, light: $('light').value }),
     });
     const data = await res.json();
     if (!res.ok) { $('msg').textContent = data.error; return; }
     $('preview').innerHTML = `<img src="${data.image}" alt="Generated QR code">
-      <div class="actions"><a href="/api/qr/${data.id}/image.png?download=1">Download PNG</a><a href="/api/qr/${data.id}/image.svg?download=1">Download SVG</a></div>`;
+      <div class="btns"><button class="ghost" id="dpng">Download PNG</button><button class="ghost" id="dsvg">Download SVG</button></div>`;
+    $('dpng').onclick = () => download(data.id, 'png');
+    $('dsvg').onclick = () => download(data.id, 'svg');
     loadHistory();
   };
-  loadHistory();
+
+  show();
 </script>
 </body>
 </html>

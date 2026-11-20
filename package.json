@@ -1,17 +1,15 @@
 {
   "name": "qr-cloud",
-  "version": "1.0.0",
-  "description": "Cloud-based QR code generator with history and scan tracking",
+  "version": "2.0.0",
+  "description": "Cloud-based QR code generator with PostgreSQL, user login and CI/CD",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
+  "scripts": { "start": "node server.js", "test": "node --test" },
+  "engines": { "node": ">=20" },
   "dependencies": {
-    "better-sqlite3": "^13.2.0",
+    "bcryptjs": "^2.4.3",
     "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0",
     "qrcode": "^1.5.4"
   }
 }
