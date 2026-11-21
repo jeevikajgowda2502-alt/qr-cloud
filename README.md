@@ -1,6 +1,6 @@
 # QR Maker v2 – cloud-based QR code generator
 
-Live demo: (add your Render link here)
+Live demo: https://qr-cloud-l07z.onrender.com
 
 ## Architecture
 Browser → Express REST API (Node.js, Docker, Render) → PostgreSQL (Neon cloud database)
