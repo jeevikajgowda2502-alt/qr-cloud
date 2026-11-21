@@ -100,7 +100,7 @@
     const loggedIn = !!token;
     $('authView').hidden = loggedIn; $('appView').hidden = !loggedIn; $('who').hidden = !loggedIn;
     $('email').textContent = userEmail || '';
-    if (loggedIn) loadHistory();
+        if (loggedIn) loadHistory();     else {       $('content').value = ''; $('tracked').checked = false;       $('preview').innerHTML = '<span>Your QR code will appear here.</span>';       $('history').innerHTML = '';     }
   }
 
   function logout() {
