@@ -36,6 +36,12 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_qr_user ON qr_codes(user_id);
+    CREATE TABLE IF NOT EXISTS scan_events (
+      id         BIGSERIAL PRIMARY KEY,
+      qr_id      TEXT NOT NULL REFERENCES qr_codes(id) ON DELETE CASCADE,
+      scanned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_scan_qr_time ON scan_events(qr_id, scanned_at);
   `);
 }
 
@@ -161,13 +167,39 @@ app.delete('/api/qr/:id', auth, wrap(async (req, res) => {
   res.status(r.rowCount ? 200 : 404).json({ deleted: r.rowCount });
 }));
 
+// Scan analytics for the logged-in user: last 14 days plus totals
+app.get('/api/stats', auth, wrap(async (req, res) => {
+  const days = await pool.query(
+    `SELECT to_char(d::date, 'YYYY-MM-DD') AS day, COALESCE(c.n, 0)::int AS scans
+     FROM generate_series(current_date - 13, current_date, interval '1 day') d
+     LEFT JOIN (
+       SELECT e.scanned_at::date AS day, count(*) AS n
+       FROM scan_events e JOIN qr_codes q ON q.id = e.qr_id
+       WHERE q.user_id = $1
+       GROUP BY 1
+     ) c ON c.day = d::date
+     ORDER BY d`,
+    [req.userId]
+  );
+  const totals = await pool.query(
+    'SELECT count(*)::int AS codes, COALESCE(sum(scans), 0)::int AS scans FROM qr_codes WHERE user_id = $1',
+    [req.userId]
+  );
+  const top = await pool.query(
+    'SELECT content, scans FROM qr_codes WHERE user_id = $1 AND tracked = true AND scans > 0 ORDER BY scans DESC LIMIT 1',
+    [req.userId]
+  );
+  res.json({ days: days.rows, totalCodes: totals.rows[0].codes, totalScans: totals.rows[0].scans, top: top.rows[0] || null });
+}));
+
 // Scan tracking: public link that counts the scan then redirects
 app.get('/r/:id', wrap(async (req, res) => {
   const { rows } = await pool.query(
-    'UPDATE qr_codes SET scans = scans + 1 WHERE id = $1 AND tracked = true RETURNING content',
+    'UPDATE qr_codes SET scans = scans + 1 WHERE id = $1 AND tracked = true RETURNING id, content',
     [req.params.id]
   );
   if (!rows[0]) return res.status(404).send('This QR code does not exist.');
+  await pool.query('INSERT INTO scan_events (qr_id) VALUES ($1)', [rows[0].id]);
   res.redirect(302, rows[0].content);
 }));
 

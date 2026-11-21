@@ -40,6 +40,13 @@
   li .txt b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   li .txt small { color:var(--muted); }
   .empty { color:var(--muted); padding:12px 0; }
+  .stats { display:flex; gap:28px; flex-wrap:wrap; margin-bottom:16px; }
+  .stats b { display:block; font-size:1.6rem; line-height:1.1; }
+  .stats small { color:var(--muted); }
+  .chart { display:flex; align-items:flex-end; gap:6px; height:160px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+  .bar { flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; height:100%; min-width:0; }
+  .bar i { display:block; width:100%; background:var(--accent); border-radius:3px 3px 0 0; min-height:2px; }
+  .bar span { font-size:.7rem; color:var(--muted); margin-top:4px; white-space:nowrap; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -77,6 +84,18 @@
       </section>
       <section class="card preview" id="preview" aria-live="polite"><span>Your QR code will appear here.</span></section>
     </div>
+    <h2>Scan activity</h2>
+    <section class="card">
+      <div class="stats">
+        <div><b id="sCodes">0</b><small>QR codes</small></div>
+        <div><b id="sScans">0</b><small>total scans</small></div>
+        <div><b id="sTop">–</b><small>scans on top code</small></div>
+      </div>
+      <div class="chart" id="chart" role="img" aria-label="Scans per day for the last 14 days"></div>
+      <button class="ghost" id="refreshStats">Refresh stats</button>
+      <p class="sub" style="margin:10px 0 0">Only codes made with “Count scans” are tracked. Last 14 days.</p>
+    </section>
+
     <h2>Your saved codes</h2>
     <ul id="history"></ul>
   </div>
@@ -100,7 +119,12 @@
     const loggedIn = !!token;
     $('authView').hidden = loggedIn; $('appView').hidden = !loggedIn; $('who').hidden = !loggedIn;
     $('email').textContent = userEmail || '';
-        if (loggedIn) loadHistory();     else {       $('content').value = ''; $('tracked').checked = false;       $('preview').innerHTML = '<span>Your QR code will appear here.</span>';       $('history').innerHTML = '';     }
+    if (loggedIn) { loadHistory(); loadStats(); }
+    else {
+      $('content').value = ''; $('tracked').checked = false;
+      $('preview').innerHTML = '<span>Your QR code will appear here.</span>';
+      $('history').innerHTML = ''; $('chart').innerHTML = '';
+    }
   }
 
   function logout() {
@@ -132,6 +156,25 @@
     a.href = await fileUrl(id, ext); a.download = `qr-${id}.${ext}`; a.click();
   }
 
+  async function loadStats() {
+    const res = await api('/api/stats');
+    if (!res.ok) return;
+    const s = await res.json();
+    $('sCodes').textContent = s.totalCodes;
+    $('sScans').textContent = s.totalScans;
+    $('sTop').textContent = s.top ? s.top.scans : '–';
+    $('sTop').title = s.top ? s.top.content : '';
+    const max = Math.max(1, ...s.days.map((d) => d.scans));
+    const chart = $('chart'); chart.innerHTML = '';
+    s.days.forEach((d, i) => {
+      const bar = document.createElement('div'); bar.className = 'bar';
+      bar.title = `${d.day}: ${d.scans} scan${d.scans === 1 ? '' : 's'}`;
+      const fill = document.createElement('i'); fill.style.height = Math.round((d.scans / max) * 120) + 'px';
+      const lab = document.createElement('span'); lab.textContent = i % 2 === 0 ? d.day.slice(5) : '\u00a0';
+      bar.append(fill, lab); chart.append(bar);
+    });
+  }
+
   async function loadHistory() {
     const res = await api('/api/qr');
     if (!res.ok) return;
@@ -148,7 +191,7 @@
       txt.append(b, s);
       const dl = document.createElement('button'); dl.className = 'ghost'; dl.textContent = 'Download'; dl.onclick = () => download(r.id, 'png');
       const del = document.createElement('button'); del.className = 'ghost'; del.textContent = 'Delete';
-      del.onclick = async () => { await api('/api/qr/' + r.id, { method: 'DELETE' }); loadHistory(); };
+      del.onclick = async () => { await api('/api/qr/' + r.id, { method: 'DELETE' }); loadHistory(); loadStats(); };
       li.append(img, txt, dl, del); ul.append(li);
     }
   }
@@ -156,6 +199,7 @@
   $('login').onclick = () => authenticate('login');
   $('register').onclick = () => authenticate('register');
   $('logout').onclick = logout;
+  $('refreshStats').onclick = () => { loadStats(); loadHistory(); };
 
   $('go').onclick = async () => {
     $('msg').textContent = '';
@@ -169,7 +213,7 @@
       <div class="btns"><button class="ghost" id="dpng">Download PNG</button><button class="ghost" id="dsvg">Download SVG</button></div>`;
     $('dpng').onclick = () => download(data.id, 'png');
     $('dsvg').onclick = () => download(data.id, 'svg');
-    loadHistory();
+    loadHistory(); loadStats();
   };
 
   show();

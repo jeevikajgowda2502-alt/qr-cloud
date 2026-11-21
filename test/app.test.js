@@ -23,6 +23,11 @@ test('creating a QR code requires login', async () => {
   assert.strictEqual(res.status, 401);
 });
 
+test('scan analytics require login', async () => {
+  const res = await fetch(base + '/api/stats');
+  assert.strictEqual(res.status, 401);
+});
+
 test('register rejects an invalid email', async () => {
   const res = await post('/api/auth/register', { email: 'not-an-email', password: 'longenough1' });
   assert.strictEqual(res.status, 400);
